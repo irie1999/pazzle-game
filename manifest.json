@@ -1,0 +1,11 @@
+{
+  "name": "Direction Puzzle",
+  "short_name": "DirPuzzle",
+  "description": "Block puzzle game with 4-directional drops",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0e17",
+  "theme_color": "#0f0e17",
+  "icons": []
+}
