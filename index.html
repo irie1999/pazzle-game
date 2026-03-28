@@ -86,7 +86,7 @@ h1 { font-size: 18px; color: #a7c4f7; margin-bottom: 8px; letter-spacing: 3px; f
   border-radius: 3px;
   transition: background 0.06s;
 }
-.cell.ghost { opacity: 0.35; }
+.cell.ghost { opacity: 0.4; }
 #tl-wrap { grid-area: tl; display: flex; flex-direction: row; gap: var(--gap); padding: 0 2px; align-items: flex-end; }
 #bl-wrap { grid-area: bl; display: flex; flex-direction: row; gap: var(--gap); padding: 0 2px; align-items: flex-start; }
 #ll-wrap { grid-area: ll; display: flex; flex-direction: column; gap: var(--gap); padding: 2px 0; align-items: flex-end; }
@@ -233,194 +233,372 @@ const ri = n => Math.floor(Math.random() * n);
 const newQ = () => ({bi: ri(BLK.length), dir: DIRS[ri(4)]});
 const shp = (bi, r) => BLK[bi].r[r % BLK[bi].r.length];
 
-function canPlace(sh, row, col) {
-  for (let r = 0; r < sh.length; r++)
-    for (let c = 0; c < sh[r].length; c++)
-      if (sh[r][c]) {
-        const gr=row+r, gc=col+c;
-        if (gr<0||gr>=N||gc<0||gc>=N||grid[gr][gc]) return false;
-      }
+/**
+ * Get the consecutive "touched group" indices in a column.
+ * TOP: consecutive chain from the topmost occupied row going DOWN.
+ * BOTTOM: consecutive chain from the bottommost occupied row going UP.
+ * Returns indices in encounter order (top→down for TOP, bottom→up for BOTTOM).
+ */
+function getColGroup(col, dir) {
+  if (dir === 'top') {
+    let first = -1;
+    for (let r = 0; r < N; r++) { if (grid[r][col]) { first = r; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let r = first; r < N && grid[r][col]; r++) g.push(r);
+    return g;
+  } else { // bottom
+    let first = -1;
+    for (let r = N - 1; r >= 0; r--) { if (grid[r][col]) { first = r; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let r = first; r >= 0 && grid[r][col]; r--) g.push(r);
+    return g; // bottommost → topmost
+  }
+}
+
+/**
+ * Get the consecutive "touched group" indices in a row.
+ * LEFT: from leftmost occupied col going RIGHT.
+ * RIGHT: from rightmost occupied col going LEFT.
+ */
+function getRowGroup(row, dir) {
+  if (dir === 'left') {
+    let first = -1;
+    for (let c = 0; c < N; c++) { if (grid[row][c]) { first = c; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let c = first; c < N && grid[row][c]; c++) g.push(c);
+    return g;
+  } else { // right
+    let first = -1;
+    for (let c = N - 1; c >= 0; c--) { if (grid[row][c]) { first = c; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let c = first; c >= 0 && grid[row][c]; c--) g.push(c);
+    return g; // rightmost → leftmost
+  }
+}
+
+/**
+ * Check if a column can accept newCount new cells from direction dir.
+ * The touched group + new cells must fit at the far end without hitting other blocks.
+ */
+function isColValid(col, dir, newCount) {
+  if (newCount === 0) return true;
+  const group = getColGroup(col, dir);
+  const total = group.length + newCount;
+  if (total > N) return false;
+  const groupSet = new Set(group);
+  // The combined group will land at the far end:
+  // TOP → rows N-total to N-1
+  // BOTTOM → rows 0 to total-1
+  if (dir === 'top') {
+    for (let r = N - total; r < N; r++) {
+      if (grid[r][col] && !groupSet.has(r)) return false;
+    }
+  } else {
+    for (let r = 0; r < total; r++) {
+      if (grid[r][col] && !groupSet.has(r)) return false;
+    }
+  }
   return true;
 }
 
-function dropPos(sh, dir, lane) {
-  const bh=sh.length, bw=sh[0].length;
-  if (dir==='top') {
-    if (lane+bw>N||!canPlace(sh,0,lane)) return null;
-    let row=0;
-    while(row+1<=N-bh&&canPlace(sh,row+1,lane)) row++;
-    return {row,col:lane};
-  }
-  if (dir==='bottom') {
-    if (lane+bw>N) return null;
-    let row=N-bh;
-    if (!canPlace(sh,row,lane)) return null;
-    while(row-1>=0&&canPlace(sh,row-1,lane)) row--;
-    return {row,col:lane};
-  }
-  if (dir==='left') {
-    if (lane+bh>N||!canPlace(sh,lane,0)) return null;
-    let col=0;
-    while(col+1<=N-bw&&canPlace(sh,lane,col+1)) col++;
-    return {row:lane,col};
-  }
-  if (dir==='right') {
-    if (lane+bh>N) return null;
-    let col=N-bw;
-    if (!canPlace(sh,lane,col)) return null;
-    while(col-1>=0&&canPlace(sh,lane,col-1)) col--;
-    return {row:lane,col};
-  }
-  return null;
-}
-
-function clearLines() {
-  let n=0;
-  const rs=[], cs=[];
-  for(let r=0;r<N;r++) if(grid[r].every(v=>v)) rs.push(r);
-  for(let c=0;c<N;c++) if(grid.every(r=>r[c])) cs.push(c);
-  rs.forEach(r=>{grid[r].fill(0);n++;});
-  cs.forEach(c=>{for(let r=0;r<N;r++)grid[r][c]=0;n++;});
-  return n;
-}
-
-function isOver() {
-  const {bi,dir}=Q[0];
-  for(let ri2=0;ri2<BLK[bi].r.length;ri2++){
-    const sh=BLK[bi].r[ri2], bh=sh.length, bw=sh[0].length;
-    const max=(dir==='top'||dir==='bottom')? N-bw : N-bh;
-    for(let lane=0;lane<=max;lane++)
-      if(dropPos(sh,dir,lane)) return false;
+/**
+ * Check if a row can accept newCount new cells from direction dir.
+ */
+function isRowValid(row, dir, newCount) {
+  if (newCount === 0) return true;
+  const group = getRowGroup(row, dir);
+  const total = group.length + newCount;
+  if (total > N) return false;
+  const groupSet = new Set(group);
+  if (dir === 'left') {
+    for (let c = N - total; c < N; c++) {
+      if (grid[row][c] && !groupSet.has(c)) return false;
+    }
+  } else {
+    for (let c = 0; c < total; c++) {
+      if (grid[row][c] && !groupSet.has(c)) return false;
+    }
   }
   return true;
+}
+
+function isValidLane(sh, dir, lane) {
+  const bh = sh.length, bw = sh[0].length;
+  if (dir === 'top' || dir === 'bottom') {
+    if (lane + bw > N) return false;
+    for (let c = 0; c < bw; c++) {
+      let newCount = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) newCount++;
+      if (!isColValid(lane + c, dir, newCount)) return false;
+    }
+    return true;
+  } else {
+    if (lane + bh > N) return false;
+    for (let r = 0; r < bh; r++) {
+      let newCount = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) newCount++;
+      if (!isRowValid(lane + r, dir, newCount)) return false;
+    }
+    return true;
+  }
+}
+
+/**
+ * Apply the slide mechanic to a single column.
+ * Touched group + new cells all slide to the far end.
+ * For TOP: group (in top→bottom order) then new cells at very bottom.
+ * For BOTTOM: new cells at very top, then group (in top→bottom order) below.
+ */
+function applyColSlide(col, dir, color, newCount) {
+  if (newCount === 0) return;
+  const group = getColGroup(col, dir);
+  // groupColors in encounter order
+  const groupColors = group.map(r => grid[r][col]);
+  group.forEach(r => { grid[r][col] = 0; });
+  const newColors = Array(newCount).fill(color);
+
+  if (dir === 'top') {
+    // Group is top→bottom order; new cells go below group at very bottom
+    const combined = [...groupColors, ...newColors];
+    const start = N - combined.length;
+    combined.forEach((clr, i) => { grid[start + i][col] = clr; });
+  } else {
+    // Group is bottom→top order; reverse to get top→bottom; new cells go above at very top
+    const groupTTB = [...groupColors].reverse();
+    const combined = [...newColors, ...groupTTB];
+    combined.forEach((clr, i) => { grid[i][col] = clr; });
+  }
+}
+
+/**
+ * Apply the slide mechanic to a single row.
+ */
+function applyRowSlide(row, dir, color, newCount) {
+  if (newCount === 0) return;
+  const group = getRowGroup(row, dir);
+  const groupColors = group.map(c => grid[row][c]);
+  group.forEach(c => { grid[row][c] = 0; });
+  const newColors = Array(newCount).fill(color);
+
+  if (dir === 'left') {
+    // Group is left→right order; new cells go to the right end
+    const combined = [...groupColors, ...newColors];
+    const start = N - combined.length;
+    combined.forEach((clr, i) => { grid[row][start + i] = clr; });
+  } else {
+    // Group is right→left order; reverse to left→right; new cells go to very left
+    const groupLTR = [...groupColors].reverse();
+    const combined = [...newColors, ...groupLTR];
+    combined.forEach((clr, i) => { grid[row][i] = clr; });
+  }
 }
 
 function place(lane) {
   if (dead) return;
-  const {bi,dir}=Q[0], sh=shp(bi,rot);
-  const pos=dropPos(sh,dir,lane);
-  if (!pos) return;
-  const col=BLK[bi].c;
-  for(let r=0;r<sh.length;r++)
-    for(let c=0;c<sh[r].length;c++)
-      if(sh[r][c]) grid[pos.row+r][pos.col+c]=col;
-  const n=clearLines();
-  sc += 10 + n*n*100;
-  if(sc>best){best=sc;localStorage.setItem('dpb',best);}
+  const {bi, dir} = Q[0], sh = shp(bi, rot);
+  if (!isValidLane(sh, dir, lane)) return;
+  const bh = sh.length, bw = sh[0].length;
+  const color = BLK[bi].c;
+
+  if (dir === 'top' || dir === 'bottom') {
+    for (let c = 0; c < bw; c++) {
+      let newCount = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) newCount++;
+      applyColSlide(lane + c, dir, color, newCount);
+    }
+  } else {
+    for (let r = 0; r < bh; r++) {
+      let newCount = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) newCount++;
+      applyRowSlide(lane + r, dir, color, newCount);
+    }
+  }
+
+  const n = clearLines();
+  sc += 10 + n * n * 100;
+  if (sc > best) { best = sc; localStorage.setItem('dpb', best); }
   Q.shift(); Q.push(newQ());
-  rot=0; hl=null;
-  if(isOver()){
-    dead=true;
-    document.getElementById('fs-val').textContent=sc;
+  rot = 0; hl = null;
+  if (isOver()) {
+    dead = true;
+    document.getElementById('fs-val').textContent = sc;
     document.getElementById('overlay').classList.add('show');
   }
   render();
 }
 
+function clearLines() {
+  let n = 0;
+  const rs = [], cs = [];
+  for (let r = 0; r < N; r++) if (grid[r].every(v => v)) rs.push(r);
+  for (let c = 0; c < N; c++) if (grid.every(r => r[c])) cs.push(c);
+  rs.forEach(r => { grid[r].fill(0); n++; });
+  cs.forEach(c => { for (let r = 0; r < N; r++) grid[r][c] = 0; n++; });
+  return n;
+}
+
+function isOver() {
+  const {bi, dir} = Q[0];
+  for (let ri2 = 0; ri2 < BLK[bi].r.length; ri2++) {
+    const sh = BLK[bi].r[ri2];
+    const bh = sh.length, bw = sh[0].length;
+    const max = (dir === 'top' || dir === 'bottom') ? N - bw : N - bh;
+    for (let lane = 0; lane <= max; lane++)
+      if (isValidLane(sh, dir, lane)) return false;
+  }
+  return true;
+}
+
 function rotate(d) {
-  const n=BLK[Q[0].bi].r.length;
-  rot=((rot+d)%n+n)%n;
+  const n = BLK[Q[0].bi].r.length;
+  rot = ((rot + d) % n + n) % n;
   render();
 }
 
+/**
+ * Ghost: show where the NEW block's cells will end up.
+ * New cells always land at the very far end of each affected lane.
+ * TOP  → bottom K rows of each column
+ * BOTTOM → top K rows
+ * LEFT → rightmost K cols of each row
+ * RIGHT → leftmost K cols
+ */
+function ghostPositions(sh, dir, lane) {
+  const bh = sh.length, bw = sh[0].length;
+  const result = new Set();
+  if (dir === 'top' || dir === 'bottom') {
+    for (let c = 0; c < bw; c++) {
+      const col = lane + c;
+      let k = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) k++;
+      if (k === 0 || !isColValid(col, dir, k)) continue;
+      if (dir === 'top') {
+        for (let i = 0; i < k; i++) result.add(`${N - k + i}_${col}`);
+      } else {
+        for (let i = 0; i < k; i++) result.add(`${i}_${col}`);
+      }
+    }
+  } else {
+    for (let r = 0; r < bh; r++) {
+      const row = lane + r;
+      let k = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) k++;
+      if (k === 0 || !isRowValid(row, dir, k)) continue;
+      if (dir === 'left') {
+        for (let i = 0; i < k; i++) result.add(`${row}_${N - k + i}`);
+      } else {
+        for (let i = 0; i < k; i++) result.add(`${row}_${i}`);
+      }
+    }
+  }
+  return result;
+}
+
+// DOM builders
 function buildBoard() {
-  const el=document.getElementById('board');
-  el.innerHTML='';
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++){
-    const d=document.createElement('div');
-    d.className='cell'; d.id=`c${r}_${c}`;
+  const el = document.getElementById('board');
+  el.innerHTML = '';
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const d = document.createElement('div');
+    d.className = 'cell'; d.id = `c${r}_${c}`;
     el.appendChild(d);
   }
 }
 
 function buildLanes() {
-  DIRS.forEach(dir=>{
-    const cont=document.getElementById(LANE_WRAP[dir]);
-    cont.innerHTML='';
-    for(let i=0;i<N;i++){
-      const b=document.createElement('button');
-      b.className='lane-btn'; b.id=`lb_${dir}_${i}`;
-      b.textContent=ARR[dir];
-      b.addEventListener('click',()=>place(i));
-      b.addEventListener('mouseenter',()=>{hl=i;renderBoard();});
-      b.addEventListener('mouseleave',()=>{hl=null;renderBoard();});
-      b.addEventListener('touchstart',e=>{e.preventDefault();hl=i;renderBoard();},{passive:false});
-      b.addEventListener('touchend',e=>{e.preventDefault();place(i);hl=null;},{passive:false});
+  DIRS.forEach(dir => {
+    const cont = document.getElementById(LANE_WRAP[dir]);
+    cont.innerHTML = '';
+    for (let i = 0; i < N; i++) {
+      const b = document.createElement('button');
+      b.className = 'lane-btn'; b.id = `lb_${dir}_${i}`;
+      b.textContent = ARR[dir];
+      b.addEventListener('click', () => place(i));
+      b.addEventListener('mouseenter', () => { hl = i; renderBoard(); });
+      b.addEventListener('mouseleave', () => { hl = null; renderBoard(); });
+      b.addEventListener('touchstart', e => { e.preventDefault(); hl = i; renderBoard(); }, {passive: false});
+      b.addEventListener('touchend', e => { e.preventDefault(); place(i); hl = null; }, {passive: false});
       cont.appendChild(b);
     }
   });
 }
 
-function drawShape(el,bi,r,sz=12){
-  const sh=shp(bi,r), rows=sh.length, cols=sh[0].length;
-  el.style.gridTemplateColumns=`repeat(${cols},${sz}px)`;
-  el.style.gridTemplateRows=`repeat(${rows},${sz}px)`;
-  el.innerHTML='';
-  sh.forEach(row=>row.forEach(v=>{
-    const c=document.createElement('div');
-    c.className='sp-cell';
-    c.style.cssText=`width:${sz}px;height:${sz}px;background:${v?BLK[bi].c:'transparent'};border-radius:2px;`;
+function drawShape(el, bi, r, sz = 12) {
+  const sh = shp(bi, r), rows = sh.length, cols = sh[0].length;
+  el.style.gridTemplateColumns = `repeat(${cols},${sz}px)`;
+  el.style.gridTemplateRows = `repeat(${rows},${sz}px)`;
+  el.innerHTML = '';
+  sh.forEach(row => row.forEach(v => {
+    const c = document.createElement('div');
+    c.className = 'sp-cell';
+    c.style.cssText = `width:${sz}px;height:${sz}px;background:${v ? BLK[bi].c : 'transparent'};border-radius:2px;`;
     el.appendChild(c);
   }));
 }
 
 function renderBoard() {
-  const {bi,dir}=Q[0], sh=shp(bi,rot);
-  const ghost=new Set();
-  if(hl!==null){
-    const pos=dropPos(sh,dir,hl);
-    if(pos) for(let r=0;r<sh.length;r++) for(let c=0;c<sh[r].length;c++)
-      if(sh[r][c]) ghost.add(`${pos.row+r}_${pos.col+c}`);
+  const {bi, dir} = Q[0], sh = shp(bi, rot);
+  const ghost = hl !== null ? ghostPositions(sh, dir, hl) : new Set();
+
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const el = document.getElementById(`c${r}_${c}`);
+    const k = `${r}_${c}`;
+    if (grid[r][c]) {
+      el.style.background = grid[r][c];
+      el.classList.remove('ghost');
+    } else if (ghost.has(k)) {
+      el.style.background = BLK[bi].c;
+      el.classList.add('ghost');
+    } else {
+      el.style.background = '#0d0d22';
+      el.classList.remove('ghost');
+    }
   }
-  for(let r=0;r<N;r++) for(let c=0;c<N;c++){
-    const el=document.getElementById(`c${r}_${c}`);
-    const k=`${r}_${c}`;
-    if(grid[r][c]){el.style.background=grid[r][c];el.classList.remove('ghost');}
-    else if(ghost.has(k)){el.style.background=BLK[bi].c;el.classList.add('ghost');}
-    else{el.style.background='#0d0d22';el.classList.remove('ghost');}
-  }
-  DIRS.forEach(d=>{
-    const cont=document.getElementById(LANE_WRAP[d]);
-    cont.style.visibility=d===dir?'visible':'hidden';
-    if(d===dir){
-      const bh=sh.length, bw=sh[0].length;
-      for(let i=0;i<N;i++){
-        const b=document.getElementById(`lb_${d}_${i}`);
-        const valid=dropPos(sh,d,i)!==null;
-        b.classList.toggle('invalid',!valid);
-        b.classList.toggle('hovered',i===hl);
+
+  DIRS.forEach(d => {
+    const cont = document.getElementById(LANE_WRAP[d]);
+    cont.style.visibility = d === dir ? 'visible' : 'hidden';
+    if (d === dir) {
+      for (let i = 0; i < N; i++) {
+        const b = document.getElementById(`lb_${d}_${i}`);
+        b.classList.toggle('invalid', !isValidLane(sh, d, i));
+        b.classList.toggle('hovered', i === hl);
       }
     }
   });
 }
 
 function render() {
-  document.getElementById('sc').textContent=sc;
-  document.getElementById('bs').textContent=best;
-  const {bi,dir}=Q[0];
-  drawShape(document.getElementById('csh'),bi,rot,16);
-  document.getElementById('cdr').textContent=ARR[dir];
-  document.getElementById('clbl').textContent=LBL[dir];
-  [1,2].forEach(i=>{
-    const it=Q[i]; if(!it) return;
-    drawShape(document.getElementById(`nsh${i}`),it.bi,0,11);
-    document.getElementById(`ndr${i}`).textContent=ARR[it.dir];
+  document.getElementById('sc').textContent = sc;
+  document.getElementById('bs').textContent = best;
+  const {bi, dir} = Q[0];
+  drawShape(document.getElementById('csh'), bi, rot, 16);
+  document.getElementById('cdr').textContent = ARR[dir];
+  document.getElementById('clbl').textContent = LBL[dir];
+  [1, 2].forEach(i => {
+    const it = Q[i]; if (!it) return;
+    drawShape(document.getElementById(`nsh${i}`), it.bi, 0, 11);
+    document.getElementById(`ndr${i}`).textContent = ARR[it.dir];
   });
   renderBoard();
 }
 
 function init() {
-  grid=Array(N).fill(null).map(()=>Array(N).fill(0));
-  Q=[newQ(),newQ(),newQ()];
-  sc=0; best=parseInt(localStorage.getItem('dpb')||'0');
-  rot=0; hl=null; dead=false;
+  grid = Array(N).fill(null).map(() => Array(N).fill(0));
+  Q = [newQ(), newQ(), newQ()];
+  sc = 0; best = parseInt(localStorage.getItem('dpb') || '0');
+  rot = 0; hl = null; dead = false;
   document.getElementById('overlay').classList.remove('show');
   buildBoard(); buildLanes(); render();
 }
 
-document.getElementById('rotl').addEventListener('click',()=>rotate(-1));
-document.getElementById('rotr').addEventListener('click',()=>rotate(1));
-document.getElementById('retry').addEventListener('click',init);
+document.getElementById('rotl').addEventListener('click', () => rotate(-1));
+document.getElementById('rotr').addEventListener('click', () => rotate(1));
+document.getElementById('retry').addEventListener('click', init);
 init();
 </script>
 </body>
