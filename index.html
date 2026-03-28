@@ -233,68 +233,168 @@ const ri = n => Math.floor(Math.random() * n);
 const newQ = () => ({bi: ri(BLK.length), dir: DIRS[ri(4)]});
 const shp = (bi, r) => BLK[bi].r[r % BLK[bi].r.length];
 
-// Count filled cells in a column
-function colCount(col) {
-  let n = 0;
-  for (let r = 0; r < N; r++) if (grid[r][col]) n++;
-  return n;
+/**
+ * Get the consecutive "touched group" indices in a column.
+ * TOP: consecutive chain from the topmost occupied row going DOWN.
+ * BOTTOM: consecutive chain from the bottommost occupied row going UP.
+ * Returns indices in encounter order (top→down for TOP, bottom→up for BOTTOM).
+ */
+function getColGroup(col, dir) {
+  if (dir === 'top') {
+    let first = -1;
+    for (let r = 0; r < N; r++) { if (grid[r][col]) { first = r; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let r = first; r < N && grid[r][col]; r++) g.push(r);
+    return g;
+  } else { // bottom
+    let first = -1;
+    for (let r = N - 1; r >= 0; r--) { if (grid[r][col]) { first = r; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let r = first; r >= 0 && grid[r][col]; r--) g.push(r);
+    return g; // bottommost → topmost
+  }
 }
 
-// Count filled cells in a row
-function rowCount(row) {
-  let n = 0;
-  for (let c = 0; c < N; c++) if (grid[row][c]) n++;
-  return n;
+/**
+ * Get the consecutive "touched group" indices in a row.
+ * LEFT: from leftmost occupied col going RIGHT.
+ * RIGHT: from rightmost occupied col going LEFT.
+ */
+function getRowGroup(row, dir) {
+  if (dir === 'left') {
+    let first = -1;
+    for (let c = 0; c < N; c++) { if (grid[row][c]) { first = c; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let c = first; c < N && grid[row][c]; c++) g.push(c);
+    return g;
+  } else { // right
+    let first = -1;
+    for (let c = N - 1; c >= 0; c--) { if (grid[row][c]) { first = c; break; } }
+    if (first === -1) return [];
+    const g = [];
+    for (let c = first; c >= 0 && grid[row][c]; c--) g.push(c);
+    return g; // rightmost → leftmost
+  }
 }
 
-// Check if lane is valid (won't overflow)
+/**
+ * Check if a column can accept newCount new cells from direction dir.
+ * The touched group + new cells must fit at the far end without hitting other blocks.
+ */
+function isColValid(col, dir, newCount) {
+  if (newCount === 0) return true;
+  const group = getColGroup(col, dir);
+  const total = group.length + newCount;
+  if (total > N) return false;
+  const groupSet = new Set(group);
+  // The combined group will land at the far end:
+  // TOP → rows N-total to N-1
+  // BOTTOM → rows 0 to total-1
+  if (dir === 'top') {
+    for (let r = N - total; r < N; r++) {
+      if (grid[r][col] && !groupSet.has(r)) return false;
+    }
+  } else {
+    for (let r = 0; r < total; r++) {
+      if (grid[r][col] && !groupSet.has(r)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Check if a row can accept newCount new cells from direction dir.
+ */
+function isRowValid(row, dir, newCount) {
+  if (newCount === 0) return true;
+  const group = getRowGroup(row, dir);
+  const total = group.length + newCount;
+  if (total > N) return false;
+  const groupSet = new Set(group);
+  if (dir === 'left') {
+    for (let c = N - total; c < N; c++) {
+      if (grid[row][c] && !groupSet.has(c)) return false;
+    }
+  } else {
+    for (let c = 0; c < total; c++) {
+      if (grid[row][c] && !groupSet.has(c)) return false;
+    }
+  }
+  return true;
+}
+
 function isValidLane(sh, dir, lane) {
   const bh = sh.length, bw = sh[0].length;
   if (dir === 'top' || dir === 'bottom') {
     if (lane + bw > N) return false;
     for (let c = 0; c < bw; c++) {
-      let newCells = 0;
-      for (let r = 0; r < bh; r++) if (sh[r][c]) newCells++;
-      if (newCells > 0 && colCount(lane + c) + newCells > N) return false;
+      let newCount = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) newCount++;
+      if (!isColValid(lane + c, dir, newCount)) return false;
     }
     return true;
   } else {
     if (lane + bh > N) return false;
     for (let r = 0; r < bh; r++) {
-      let newCells = 0;
-      for (let c = 0; c < bw; c++) if (sh[r][c]) newCells++;
-      if (newCells > 0 && rowCount(lane + r) + newCells > N) return false;
+      let newCount = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) newCount++;
+      if (!isRowValid(lane + r, dir, newCount)) return false;
     }
     return true;
   }
 }
 
-// Apply the slide-to-edge mechanic for one column (top/bottom drops)
-function slideCol(col, newCells, dir) {
-  const existing = [];
-  for (let r = 0; r < N; r++) if (grid[r][col]) existing.push(grid[r][col]);
-  for (let r = 0; r < N; r++) grid[r][col] = 0;
-  // dir=top: new block goes to far end (bottom), existing above
-  // dir=bottom: new block goes to far end (top), existing below
-  const combined = dir === 'top'
-    ? [...existing, ...newCells]
-    : [...newCells, ...existing];
-  const start = dir === 'top' ? N - combined.length : 0;
-  combined.forEach((clr, i) => grid[start + i][col] = clr);
+/**
+ * Apply the slide mechanic to a single column.
+ * Touched group + new cells all slide to the far end.
+ * For TOP: group (in top→bottom order) then new cells at very bottom.
+ * For BOTTOM: new cells at very top, then group (in top→bottom order) below.
+ */
+function applyColSlide(col, dir, color, newCount) {
+  if (newCount === 0) return;
+  const group = getColGroup(col, dir);
+  // groupColors in encounter order
+  const groupColors = group.map(r => grid[r][col]);
+  group.forEach(r => { grid[r][col] = 0; });
+  const newColors = Array(newCount).fill(color);
+
+  if (dir === 'top') {
+    // Group is top→bottom order; new cells go below group at very bottom
+    const combined = [...groupColors, ...newColors];
+    const start = N - combined.length;
+    combined.forEach((clr, i) => { grid[start + i][col] = clr; });
+  } else {
+    // Group is bottom→top order; reverse to get top→bottom; new cells go above at very top
+    const groupTTB = [...groupColors].reverse();
+    const combined = [...newColors, ...groupTTB];
+    combined.forEach((clr, i) => { grid[i][col] = clr; });
+  }
 }
 
-// Apply the slide-to-edge mechanic for one row (left/right drops)
-function slideRow(row, newCells, dir) {
-  const existing = [];
-  for (let c = 0; c < N; c++) if (grid[row][c]) existing.push(grid[row][c]);
-  for (let c = 0; c < N; c++) grid[row][c] = 0;
-  // dir=left: new block goes to far end (right), existing to the left
-  // dir=right: new block goes to far end (left), existing to the right
-  const combined = dir === 'left'
-    ? [...existing, ...newCells]
-    : [...newCells, ...existing];
-  const start = dir === 'left' ? N - combined.length : 0;
-  combined.forEach((clr, i) => grid[row][start + i] = clr);
+/**
+ * Apply the slide mechanic to a single row.
+ */
+function applyRowSlide(row, dir, color, newCount) {
+  if (newCount === 0) return;
+  const group = getRowGroup(row, dir);
+  const groupColors = group.map(c => grid[row][c]);
+  group.forEach(c => { grid[row][c] = 0; });
+  const newColors = Array(newCount).fill(color);
+
+  if (dir === 'left') {
+    // Group is left→right order; new cells go to the right end
+    const combined = [...groupColors, ...newColors];
+    const start = N - combined.length;
+    combined.forEach((clr, i) => { grid[row][start + i] = clr; });
+  } else {
+    // Group is right→left order; reverse to left→right; new cells go to very left
+    const groupLTR = [...groupColors].reverse();
+    const combined = [...newColors, ...groupLTR];
+    combined.forEach((clr, i) => { grid[row][i] = clr; });
+  }
 }
 
 function place(lane) {
@@ -306,15 +406,15 @@ function place(lane) {
 
   if (dir === 'top' || dir === 'bottom') {
     for (let c = 0; c < bw; c++) {
-      const newCells = [];
-      for (let r = 0; r < bh; r++) if (sh[r][c]) newCells.push(color);
-      if (newCells.length > 0) slideCol(lane + c, newCells, dir);
+      let newCount = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) newCount++;
+      applyColSlide(lane + c, dir, color, newCount);
     }
   } else {
     for (let r = 0; r < bh; r++) {
-      const newCells = [];
-      for (let c = 0; c < bw; c++) if (sh[r][c]) newCells.push(color);
-      if (newCells.length > 0) slideRow(lane + r, newCells, dir);
+      let newCount = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) newCount++;
+      applyRowSlide(lane + r, dir, color, newCount);
     }
   }
 
@@ -359,38 +459,39 @@ function rotate(d) {
   render();
 }
 
-// Compute where new block cells will end up (for ghost preview)
+/**
+ * Ghost: show where the NEW block's cells will end up.
+ * New cells always land at the very far end of each affected lane.
+ * TOP  → bottom K rows of each column
+ * BOTTOM → top K rows
+ * LEFT → rightmost K cols of each row
+ * RIGHT → leftmost K cols
+ */
 function ghostPositions(sh, dir, lane) {
   const bh = sh.length, bw = sh[0].length;
   const result = new Set();
   if (dir === 'top' || dir === 'bottom') {
     for (let c = 0; c < bw; c++) {
       const col = lane + c;
-      let newCount = 0;
-      for (let r = 0; r < bh; r++) if (sh[r][c]) newCount++;
-      if (newCount === 0) continue;
-      const exist = colCount(col);
-      if (exist + newCount > N) continue;
+      let k = 0;
+      for (let r = 0; r < bh; r++) if (sh[r][c]) k++;
+      if (k === 0 || !isColValid(col, dir, k)) continue;
       if (dir === 'top') {
-        // new cells are at the bottom: rows N-newCount to N-1
-        for (let i = 0; i < newCount; i++) result.add(`${N - newCount + i}_${col}`);
+        for (let i = 0; i < k; i++) result.add(`${N - k + i}_${col}`);
       } else {
-        // new cells are at the top: rows 0 to newCount-1
-        for (let i = 0; i < newCount; i++) result.add(`${i}_${col}`);
+        for (let i = 0; i < k; i++) result.add(`${i}_${col}`);
       }
     }
   } else {
     for (let r = 0; r < bh; r++) {
       const row = lane + r;
-      let newCount = 0;
-      for (let c = 0; c < bw; c++) if (sh[r][c]) newCount++;
-      if (newCount === 0) continue;
-      const exist = rowCount(row);
-      if (exist + newCount > N) continue;
+      let k = 0;
+      for (let c = 0; c < bw; c++) if (sh[r][c]) k++;
+      if (k === 0 || !isRowValid(row, dir, k)) continue;
       if (dir === 'left') {
-        for (let i = 0; i < newCount; i++) result.add(`${row}_${N - newCount + i}`);
+        for (let i = 0; i < k; i++) result.add(`${row}_${N - k + i}`);
       } else {
-        for (let i = 0; i < newCount; i++) result.add(`${row}_${i}`);
+        for (let i = 0; i < k; i++) result.add(`${row}_${i}`);
       }
     }
   }
